@@ -1,0 +1,143 @@
+// lib/screens/transactions_tab.dart
+
+import 'package:flutter/material.dart';
+import 'package:finsight/models/transaction_model.dart';
+import 'package:finsight/screens/add_transaction_screen.dart';
+import 'package:finsight/services/auth_service.dart';
+import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+class TransactionsTab extends StatefulWidget {
+  const TransactionsTab({super.key});
+
+  @override
+  State<TransactionsTab> createState() => _TransactionsTabState();
+}
+
+class _TransactionsTabState extends State<TransactionsTab> {
+  late Future<List<TransactionModel>> _transactionsFuture;
+  final _authService = AuthService();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTransactions();
+  }
+
+  // This function now fetches the data once.
+  Future<void> _loadTransactions() async {
+    setState(() {
+      _transactionsFuture = _fetchTransactionsFromSupabase();
+    });
+  }
+
+  Future<List<TransactionModel>> _fetchTransactionsFromSupabase() async {
+    final user = _authService.currentUser;
+    if (user == null) {
+      return []; // Return an empty list if user is not logged in
+    }
+
+    // This is a one-time fetch, not a stream
+    final response = await Supabase.instance.client
+        .from('transactions')
+        .select()
+        .eq('user_id', user.id)
+        .order('transaction_date', ascending: false);
+
+    // Convert the list of maps into a list of TransactionModel objects
+    final transactions = (response as List)
+        .map((map) => TransactionModel.fromJson(map))
+        .toList();
+
+    return transactions;
+  }
+
+  void _navigateAndRefresh() async {
+    // Wait for the AddTransactionScreen to close
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => const AddTransactionScreen()),
+    );
+    // After it closes, reload the transactions to see the new one
+    _loadTransactions();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currencyFormatter =
+    NumberFormat.currency(locale: 'en_IN', symbol: '₹');
+
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        title: const Text("Transactions"),
+        backgroundColor: const Color(0xFF006241),
+      ),
+      body: FutureBuilder<List<TransactionModel>>(
+        future: _transactionsFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return Center(child: Text("Error: ${snapshot.error}"));
+          }
+          if (!snapshot.hasData || snapshot.data!.isEmpty) {
+            return const Center(
+              child: Text(
+                "No transactions found.\nClick the '+' button to add one.",
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 18),
+              ),
+            );
+          }
+
+          final transactions = snapshot.data!;
+
+          return RefreshIndicator(
+            onRefresh: _loadTransactions, // Allows user to pull-to-refresh
+            child: ListView.builder(
+              itemCount: transactions.length,
+              itemBuilder: (context, index) {
+                final transaction = transactions[index];
+                final isCredit = transaction.type == TransactionType.credit;
+
+                return Card(
+                  margin:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  child: ListTile(
+                    leading: Icon(
+                      isCredit ? Icons.arrow_downward : Icons.arrow_upward,
+                      color: isCredit ? Colors.green : Colors.red,
+                    ),
+                    title: Text(
+                      transaction.senderAddress,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Text(
+                      transaction.messageBody,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: Text(
+                      currencyFormatter.format(transaction.amount),
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        color: isCredit ? Colors.green : Colors.red,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _navigateAndRefresh,
+        backgroundColor: const Color(0xFF006241),
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
+}
