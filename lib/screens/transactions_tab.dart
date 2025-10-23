@@ -47,6 +47,40 @@ class _TransactionsTabState extends State<TransactionsTab> {
     return transactions;
   }
 
+  // --- THIS FUNCTION IS NOW FIXED ---
+  Future<void> _deleteFromSupabase(String transactionId) async {
+    // 1. Get the current user
+    final user = _authService.currentUser;
+    if (user == null) {
+      // If no user, don't even try.
+      _loadTransactions(); // Refresh to be safe
+      return;
+    }
+
+    try {
+      await Supabase.instance.client
+          .from('transactions')
+          .delete()
+          .eq('id', transactionId)       // Match the transaction ID
+          .eq('user_id', user.id);  // --- AND match the current user's ID ---
+
+      // No need to call _loadTransactions() on success,
+      // as the item is already gone from the local list.
+
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error deleting from server: ${e.toString()}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        // If server delete fails, refresh list to get back in sync
+        _loadTransactions();
+      }
+    }
+  }
+
   void _navigateAndRefresh() async {
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (context) => const AddTransactionScreen()),
@@ -99,29 +133,68 @@ class _TransactionsTabState extends State<TransactionsTab> {
                 final transaction = transactions[index];
                 final isCredit = transaction.type == TransactionType.credit;
 
-                return Card(
-                  margin:
-                  const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  child: ListTile(
-                    leading: Icon(
-                      isCredit ? Icons.arrow_downward : Icons.arrow_upward,
-                      color: isCredit ? Colors.green : Colors.red,
-                    ),
-                    title: Text(
-                      transaction.senderAddress,
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    subtitle: Text(
-                      transaction.messageBody,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    trailing: Text(
-                      currencyFormatter.format(transaction.amount),
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
+                return Dismissible(
+                  key: ValueKey(transaction.id!),
+                  direction: DismissDirection.endToStart,
+
+                  onDismissed: (direction) {
+                    final removedTransaction = transactions.removeAt(index);
+                    setState(() {});
+
+                    ScaffoldMessenger.of(context)
+                        .showSnackBar(
+                      SnackBar(
+                        content: const Text('Transaction deleted'),
+                        action: SnackBarAction(
+                          label: 'Undo',
+                          onPressed: () {
+                            setState(() {
+                              transactions.insert(index, removedTransaction);
+                            });
+                          },
+                        ),
+                      ),
+                    )
+                        .closed
+                        .then((reason) {
+                      if (reason != SnackBarClosedReason.action) {
+                        // This will now work correctly!
+                        _deleteFromSupabase(removedTransaction.id!);
+                      }
+                    });
+                  },
+
+                  background: Container(
+                    color: Colors.red,
+                    alignment: Alignment.centerRight,
+                    padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                    child: const Icon(Icons.delete, color: Colors.white),
+                  ),
+
+                  child: Card(
+                    margin: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 4),
+                    child: ListTile(
+                      leading: Icon(
+                        isCredit ? Icons.arrow_downward : Icons.arrow_upward,
                         color: isCredit ? Colors.green : Colors.red,
+                      ),
+                      title: Text(
+                        transaction.senderAddress,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      subtitle: Text(
+                        transaction.messageBody,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: Text(
+                        currencyFormatter.format(transaction.amount),
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          color: isCredit ? Colors.green : Colors.red,
+                        ),
                       ),
                     ),
                   ),

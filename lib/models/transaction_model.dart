@@ -3,6 +3,7 @@ import 'dart:convert';
 enum TransactionType { credit, debit }
 
 class TransactionModel {
+  final String? id; // --- ADDED THIS LINE ---
   final String userId;
   final String senderAddress;
   final String messageBody;
@@ -11,6 +12,7 @@ class TransactionModel {
   final TransactionType type;
 
   TransactionModel({
+    this.id, // --- ADDED THIS LINE ---
     required this.userId,
     required this.senderAddress,
     required this.messageBody,
@@ -27,11 +29,13 @@ class TransactionModel {
       'transaction_date': transactionDate.toIso8601String(),
       'amount': amount,
       'type': type == TransactionType.credit ? 'credit' : 'debit',
+      // We don't include 'id' in toJson, as Supabase generates it on creation
     };
   }
 
   factory TransactionModel.fromJson(Map<String, dynamic> json) {
     return TransactionModel(
+      id: json['id']?.toString(), // --- ADDED THIS LINE ---
       userId: json['user_id'],
       senderAddress: json['sender_address'],
       messageBody: json['message_body'],

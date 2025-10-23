@@ -1,8 +1,10 @@
-import 'dart:io'; // Needed for Image.file
+import 'dart:io';
+import 'dart:math'; // For the 'max' function
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:finsight/services/ocr_service.dart';
-import 'package:finsight/models/transaction_model.dart'; // Import TransactionModel for the enum
+import 'package:finsight/models/transaction_model.dart';
+import 'package:finsight/screens/add_transaction_screen.dart';
 
 class OcrScreen extends StatefulWidget {
   const OcrScreen({super.key});
@@ -31,7 +33,7 @@ class _OcrScreenState extends State<OcrScreen> {
         setState(() { _selectedImage = image; });
         final result = await _ocrService.processImage(image.path);
         setState(() {
-          _recognizedText = result;
+          _recognizedText = result.isEmpty ? "No text detected." : result;
         });
       } else {
         setState(() { _recognizedText = "Image selection cancelled."; });
@@ -41,7 +43,6 @@ class _OcrScreenState extends State<OcrScreen> {
         _recognizedText = "Error processing image: $e";
       });
     } finally {
-      // Check if the widget is still mounted before calling setState
       if (mounted) {
         setState(() {
           _isProcessing = false;
@@ -50,44 +51,99 @@ class _OcrScreenState extends State<OcrScreen> {
     }
   }
 
-  // Function to parse transaction details from OCR text
-  Map<String, dynamic> _parseTransactionDetails(String text) {
-    double? amount;
-    // Use TransactionType enum from transaction_model.dart
-    TransactionType transactionType = TransactionType.debit; // Default to debit, adjust later
-    bool typeFound = false;
+  // --- This is the fixed parsing function ---
+  TransactionModel? _parseTransactionDetails(String text) {
+    String merchant = "Unknown";
+    double? finalAmount;
+    TransactionType type = TransactionType.debit; // Default to debit for receipts
 
-    // --- Try to extract Amount ---
-    final amountRegex = RegExp(
-      r"(?:rs\.?|inr\.?|₹)\s*([\d,]+\.?\d*)",
-      caseSensitive: false,
-    );
+    final List<String> lines = text.split('\n');
+    final lowerText = text.toLowerCase();
 
-    final amountMatch = amountRegex.firstMatch(text);
-    if (amountMatch != null) {
-      final amountString = amountMatch.group(1)?.replaceAll(',', '');
-      if (amountString != null) {
-        amount = double.tryParse(amountString);
+    // --- 1. Extract Merchant ---
+    for (String line in lines) {
+      String trimmedLine = line.trim();
+      // Find the first line that is > 3 chars and not just a number
+      if (trimmedLine.length > 3 && double.tryParse(trimmedLine) == null) {
+        // And isn't a generic receipt line
+        if (!trimmedLine.toLowerCase().contains("invoice") &&
+            !trimmedLine.toLowerCase().contains("receipt")) {
+          merchant = trimmedLine;
+          break; // Found it
+        }
       }
     }
 
-    // --- Try to determine Transaction Type ---
-    final lowerText = text.toLowerCase();
-    if (lowerText.contains("credited") || lowerText.contains("received") || lowerText.contains("deposit")) {
-      transactionType = TransactionType.credit;
-      typeFound = true;
-    } else if (lowerText.contains("paid") || lowerText.contains("debited") || lowerText.contains("sent") || lowerText.contains("spent") || lowerText.contains("payment")) {
-      transactionType = TransactionType.debit;
-      typeFound = true;
+    // --- 2. Determine Transaction Type ---
+    if (lowerText.contains("credited") || lowerText.contains("received")) {
+      type = TransactionType.credit;
     }
 
-    // TODO: Add RegEx for Merchant/Recipient and Date
+    // --- 3. Extract Amount ---
+    // This regex finds 1,234.56 or 1234.56
+    final RegExp amountRegex = RegExp(r"(\d{1,3}(?:,?\d{3})*\.\d{2})");
+    double savedAmount = 0.0;
 
-    return {
-      'amount': amount,
-      'type': typeFound ? transactionType : null, // Return null if no keyword found
-    };
+    // First, find the "saved" amount so we can ignore it.
+    for (int i = 0; i < lines.length; i++) {
+      String lowerLine = lines[i].toLowerCase();
+      // Look for the "saved" keyword
+      if (lowerLine.contains("saved")) {
+        // Check the *next* line (if it exists) for the amount
+        if (i + 1 < lines.length) {
+          String nextLine = lines[i+1];
+          // We must remove commas for parsing (e.g., "1,234.00" -> "1234.00")
+          Match? amountMatch = amountRegex.firstMatch(nextLine.replaceAll(',', ''));
+          if (amountMatch != null) {
+            double? parsedAmount = double.tryParse(amountMatch.group(1)!);
+            if (parsedAmount != null) {
+              savedAmount = parsedAmount;
+              break; // Found it, stop looking
+            }
+          }
+        }
+      }
+    }
+
+    // Now, find all other amounts
+    List<double> allAmounts = [];
+    for (String line in lines) {
+      // Find all matches on this line
+      Iterable<Match> matches = amountRegex.allMatches(line.replaceAll(',', ''));
+      for (Match match in matches) {
+        double? parsedAmount = double.tryParse(match.group(1)!);
+        if (parsedAmount != null) {
+          allAmounts.add(parsedAmount);
+        }
+      }
+    }
+
+    // Filter out the saved amount
+    List<double> filteredAmounts = allAmounts.where((amount) => amount != savedAmount).toList();
+
+    // If we have no amounts left, we failed.
+    if (filteredAmounts.isEmpty) {
+      return null;
+    }
+
+    // The total is the largest remaining amount.
+    finalAmount = filteredAmounts.reduce(max);
+
+    // --- 4. Return a partial TransactionModel ---
+    if (finalAmount != null) {
+      return TransactionModel(
+        userId: '', // This will be filled by AuthService on the next screen
+        senderAddress: merchant,
+        messageBody: text, // Save the full OCR text
+        transactionDate: DateTime.now(), // Use current time
+        amount: finalAmount,
+        type: type,
+      );
+    }
+
+    return null; // Return null if no valid amount was found
   }
+  // --- END OF UPDATED FUNCTION ---
 
 
   @override
@@ -133,7 +189,6 @@ class _OcrScreenState extends State<OcrScreen> {
             ),
             const SizedBox(height: 20),
 
-            // Display selected image
             if (_selectedImage != null)
               Container(
                 height: 200,
@@ -143,12 +198,11 @@ class _OcrScreenState extends State<OcrScreen> {
                   border: Border.all(color: Colors.grey),
                   image: DecorationImage(
                     image: FileImage(File(_selectedImage!.path)),
-                    fit: BoxFit.contain, // Show the whole image
+                    fit: BoxFit.contain,
                   ),
                 ),
               ),
 
-            // Display processing status or results
             Container(
               padding: const EdgeInsets.all(12.0),
               decoration: BoxDecoration(
@@ -171,48 +225,40 @@ class _OcrScreenState extends State<OcrScreen> {
             ),
             const SizedBox(height: 20),
             ElevatedButton(
-              // Disable button if still processing, if text is placeholder, error, or empty
               onPressed: (_isProcessing ||
-                  _recognizedText.startsWith("Placeholder") ||
                   _recognizedText.startsWith("Error") ||
                   _recognizedText.startsWith("No text") ||
-                  _recognizedText.startsWith("No image") ||
                   _recognizedText.isEmpty)
                   ? null
                   : () {
-                final details = _parseTransactionDetails(_recognizedText);
-                final double? extractedAmount = details['amount'] as double?;
-                final TransactionType? extractedType = details['type'] as TransactionType?; // Can be null now
 
-                print("--- Parsed Details ---");
-                print("Amount: $extractedAmount");
-                print("Type: $extractedType");
+                // 1. Parse the text
+                final TransactionModel? parsedData = _parseTransactionDetails(_recognizedText);
 
-                if (extractedAmount == null) {
+                if (parsedData == null) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("Could not parse amount from text."))
+                      const SnackBar(content: Text("Could not parse an amount from the text. Please enter manually."))
                   );
-                  return;
-                }
-                if (extractedType == null) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("Could not determine transaction type (credit/debit)."))
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const AddTransactionScreen()),
                   );
-                  // Optionally, you could default to debit or ask the user
-                  return;
+                } else {
+                  // 2. Navigate to the AddTransactionScreen with the pre-filled data
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => AddTransactionScreen(prefillData: parsedData),
+                    ),
+                  );
                 }
-
-                // TODO: Navigate to AddTransactionScreen pre-filled, or save directly
-                ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text("Parsed Amount: $extractedAmount, Type: $extractedType. TODO: Save it."))
-                );
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.orange,
-                padding: const EdgeInsets.symmetric(vertical: 12), // Added padding
+                padding: const EdgeInsets.symmetric(vertical: 12),
               ),
               child: const Text(
-                  "Process & Save Transaction", // Updated Text
+                  "Process & Confirm Transaction",
                   style: TextStyle(color: Colors.white, fontSize: 16)
               ),
             ),

@@ -4,7 +4,10 @@ import 'package:finsight/services/auth_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class AddTransactionScreen extends StatefulWidget {
-  const AddTransactionScreen({super.key});
+  // We add an optional parameter to receive pre-filled data
+  final TransactionModel? prefillData;
+
+  const AddTransactionScreen({super.key, this.prefillData});
 
   @override
   State<AddTransactionScreen> createState() => _AddTransactionScreenState();
@@ -17,6 +20,18 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   final _amountController = TextEditingController();
   TransactionType _selectedType = TransactionType.debit;
   bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // When the screen loads, check if we have pre-fill data
+    if (widget.prefillData != null) {
+      _senderController.text = widget.prefillData!.senderAddress;
+      _bodyController.text = widget.prefillData!.messageBody;
+      _amountController.text = widget.prefillData!.amount.toStringAsFixed(2);
+      _selectedType = widget.prefillData!.type;
+    }
+  }
 
   Future<void> _saveTransaction() async {
     if (!_formKey.currentState!.validate()) {
@@ -46,7 +61,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       userId: user.id,
       senderAddress: _senderController.text,
       messageBody: _bodyController.text,
-      transactionDate: DateTime.now(),
+      transactionDate: DateTime.now(), // We could also try parsing this
       amount: amount,
       type: _selectedType,
     );
@@ -60,7 +75,9 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Transaction saved successfully!')),
         );
+        // Pop twice: once to close this screen, once to close the OCR screen
         Navigator.of(context).pop();
+        Navigator.of(context).pop(); // Go all the way back to the home screen
       }
     } catch (e) {
       if (mounted) {
@@ -79,7 +96,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Add Manual Transaction'),
+        title: Text(widget.prefillData != null ? 'Confirm Transaction' : 'Add Manual Transaction'),
         backgroundColor: const Color(0xFF006241),
         titleTextStyle: const TextStyle(
           color: Colors.white,
@@ -147,7 +164,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                 TextFormField(
                   controller: _senderController,
                   decoration: const InputDecoration(
-                    labelText: 'Sender (e.g., AM-HDFCBK)',
+                    labelText: 'Sender / Merchant',
                     border: OutlineInputBorder(),
                   ),
                   validator: (value) {
@@ -162,7 +179,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                   controller: _bodyController,
                   maxLines: 4,
                   decoration: const InputDecoration(
-                    labelText: 'Paste SMS Body Here (Optional)',
+                    labelText: 'Original Text (from OCR)',
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -175,7 +192,10 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                     backgroundColor: const Color(0xFF006241),
                     padding: const EdgeInsets.symmetric(vertical: 16),
                   ),
-                  child: const Text('Save Transaction', style: TextStyle(color: Colors.white)),
+                  child: Text(
+                      widget.prefillData != null ? 'Confirm & Save' : 'Save Transaction',
+                      style: const TextStyle(color: Colors.white)
+                  ),
                 ),
               ],
             ),
