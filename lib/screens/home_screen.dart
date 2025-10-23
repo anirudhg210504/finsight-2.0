@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'home_tab.dart';
-import 'transactions_tab.dart';
+import 'transactions_tab.dart'; // <<<--- MAKE SURE THIS LINE IS PRESENT
 import 'reports_tab.dart';
 import 'profile_tab.dart';
 
@@ -17,14 +17,14 @@ class _HomeScreenState extends State<HomeScreen> {
   // Now only 4 tabs
   final List<Widget> _tabs = [
     const HomeTab(),
-    const TransactionsTab(),
+    const TransactionsTab(), // This line needs the import
     const ReportsTab(),
     const ProfileTab(),
   ];
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold( // Removed SafeArea as AppBar provides it
+    return Scaffold(
       body: _tabs[_currentIndex],
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
@@ -51,7 +51,6 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: Icon(Icons.person_outline),
             label: 'Profile',
           ),
-          // Removed the SMS Inbox item
         ],
       ),
     );
