@@ -81,6 +81,12 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       appBar: AppBar(
         title: const Text('Add Manual Transaction'),
         backgroundColor: const Color(0xFF006241),
+        titleTextStyle: const TextStyle(
+          color: Colors.white,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
+        iconTheme: const IconThemeData(color: Colors.white),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -169,7 +175,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                     backgroundColor: const Color(0xFF006241),
                     padding: const EdgeInsets.symmetric(vertical: 16),
                   ),
-                  child: const Text('Save Transaction'),
+                  child: const Text('Save Transaction', style: TextStyle(color: Colors.white)),
                 ),
               ],
             ),

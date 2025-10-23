@@ -1,5 +1,3 @@
-// lib/screens/transactions_tab.dart
-
 import 'package:flutter/material.dart';
 import 'package:finsight/models/transaction_model.dart';
 import 'package:finsight/screens/add_transaction_screen.dart';
@@ -15,7 +13,7 @@ class TransactionsTab extends StatefulWidget {
 }
 
 class _TransactionsTabState extends State<TransactionsTab> {
-  late Future<List<TransactionModel>> _transactionsFuture;
+  Future<List<TransactionModel>>? _transactionsFuture;
   final _authService = AuthService();
 
   @override
@@ -24,7 +22,6 @@ class _TransactionsTabState extends State<TransactionsTab> {
     _loadTransactions();
   }
 
-  // This function now fetches the data once.
   Future<void> _loadTransactions() async {
     setState(() {
       _transactionsFuture = _fetchTransactionsFromSupabase();
@@ -34,17 +31,15 @@ class _TransactionsTabState extends State<TransactionsTab> {
   Future<List<TransactionModel>> _fetchTransactionsFromSupabase() async {
     final user = _authService.currentUser;
     if (user == null) {
-      return []; // Return an empty list if user is not logged in
+      return [];
     }
 
-    // This is a one-time fetch, not a stream
     final response = await Supabase.instance.client
         .from('transactions')
         .select()
         .eq('user_id', user.id)
         .order('transaction_date', ascending: false);
 
-    // Convert the list of maps into a list of TransactionModel objects
     final transactions = (response as List)
         .map((map) => TransactionModel.fromJson(map))
         .toList();
@@ -53,11 +48,9 @@ class _TransactionsTabState extends State<TransactionsTab> {
   }
 
   void _navigateAndRefresh() async {
-    // Wait for the AddTransactionScreen to close
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (context) => const AddTransactionScreen()),
     );
-    // After it closes, reload the transactions to see the new one
     _loadTransactions();
   }
 
@@ -71,6 +64,11 @@ class _TransactionsTabState extends State<TransactionsTab> {
       appBar: AppBar(
         title: const Text("Transactions"),
         backgroundColor: const Color(0xFF006241),
+        titleTextStyle: const TextStyle(
+          color: Colors.white,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
       ),
       body: FutureBuilder<List<TransactionModel>>(
         future: _transactionsFuture,
@@ -94,7 +92,7 @@ class _TransactionsTabState extends State<TransactionsTab> {
           final transactions = snapshot.data!;
 
           return RefreshIndicator(
-            onRefresh: _loadTransactions, // Allows user to pull-to-refresh
+            onRefresh: _loadTransactions,
             child: ListView.builder(
               itemCount: transactions.length,
               itemBuilder: (context, index) {
@@ -136,7 +134,7 @@ class _TransactionsTabState extends State<TransactionsTab> {
       floatingActionButton: FloatingActionButton(
         onPressed: _navigateAndRefresh,
         backgroundColor: const Color(0xFF006241),
-        child: const Icon(Icons.add),
+        child: const Icon(Icons.add, color: Colors.white),
       ),
     );
   }

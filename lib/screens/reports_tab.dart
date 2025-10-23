@@ -10,6 +10,11 @@ class ReportsTab extends StatelessWidget {
       appBar: AppBar(
         title: const Text("Reports"),
         backgroundColor: const Color(0xFF006241),
+        titleTextStyle: const TextStyle(
+          color: Colors.white,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
       ),
       body: const Center(
         child: Text(

@@ -18,6 +18,11 @@ dependencies:
   cupertino_icons: ^1.0.8
   intl: ^0.18.1
   permission_handler: ^11.4.0
+  image_picker: ^1.2.0
+  image: ^4.5.4 # We still need this for image handling
+
+  # *** NEW ML PACKAGE (REPLACES TFLITE) ***
+  google_mlkit_text_recognition: ^0.11.0
 
 dev_dependencies:
   flutter_test:
@@ -27,3 +32,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  # We no longer need to list the tflite models as assets
+  # assets:
+  #   - assets/models/
