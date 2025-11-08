@@ -10,7 +10,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
+  fl_chart: ^0.68.0
   # Supabase
   supabase_flutter: ^2.5.0
 

@@ -33,11 +33,14 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     super.initState();
     _isEditMode = widget.prefillData != null && widget.prefillData!.id != null;
 
+    DateTime initialDate;
     if (_isEditMode) {
-      _selectedDateTime = widget.prefillData!.transactionDate;
+      initialDate = widget.prefillData!.transactionDate;
     } else {
-      _selectedDateTime = DateTime.now();
+      initialDate = DateTime.now();
     }
+    // Set time to midnight (start of the day)
+    _selectedDateTime = DateTime(initialDate.year, initialDate.month, initialDate.day);
 
     if (widget.prefillData != null) {
       _senderController.text = widget.prefillData!.senderAddress;
@@ -60,34 +63,15 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       context: context,
       initialDate: _selectedDateTime,
       firstDate: DateTime(2000),
-      lastDate: DateTime.now().add(const Duration(days: 1)),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
     );
     if (picked != null && picked != _selectedDateTime) {
       setState(() {
-        _selectedDateTime = DateTime(
-          picked.year, picked.month, picked.day,
-          _selectedDateTime.hour, _selectedDateTime.minute,
-        );
+        _selectedDateTime = DateTime(picked.year, picked.month, picked.day);
       });
     }
   }
 
-  Future<void> _selectTime(BuildContext context) async {
-    final TimeOfDay? picked = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(_selectedDateTime),
-    );
-    if (picked != null) {
-      setState(() {
-        _selectedDateTime = DateTime(
-          _selectedDateTime.year, _selectedDateTime.month, _selectedDateTime.day,
-          picked.hour, picked.minute,
-        );
-      });
-    }
-  }
-
-  // --- THIS FUNCTION HAS THE DEBUG PRINT ---
   Future<void> _saveTransaction() async {
     if (!_formKey.currentState!.validate()) { return; }
     setState(() => _isLoading = true);
@@ -112,14 +96,12 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       'amount': amount,
       'type': _selectedType == TransactionType.credit ? 'credit' : 'debit',
       'category': _selectedCategory,
-      'transaction_date': _selectedDateTime.toIso8601String(), // Using the selected date/time
-    };
 
-    // --- DEBUG PRINT STATEMENTS ---
-    print("--- Saving Data ---");
-    print("Is Edit Mode: $_isEditMode");
-    print("Data being sent: $data");
-    // --- END OF DEBUG PRINT ---
+      // --- THIS IS THE FIX ---
+      // Convert the local DateTime to UTC before sending it as a string
+      'transaction_date': _selectedDateTime.toUtc().toIso8601String(),
+      // --- END OF FIX ---
+    };
 
     try {
       if (_isEditMode) {
@@ -142,7 +124,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                 : 'Transaction saved successfully!'),
           ),
         );
-        Navigator.of(context).pop(); // Go back to the list
+        Navigator.of(context).pop();
         if (widget.prefillData != null && !_isEditMode) {
           Navigator.of(context).pop();
         }
@@ -159,7 +141,6 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       }
     }
   }
-  // --- END OF UPDATED FUNCTION ---
 
   String _getAppBarTitle() { return _isEditMode ? 'Edit Transaction' : (widget.prefillData != null ? 'Confirm Transaction' : 'Add Manual Transaction'); }
   String _getButtonText() { return _isEditMode ? 'Update Transaction' : (widget.prefillData != null ? 'Confirm & Save' : 'Save Transaction'); }
@@ -167,7 +148,6 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   @override
   Widget build(BuildContext context) {
     final DateFormat dateFormatter = DateFormat('EEE, MMM d, yyyy');
-    final DateFormat timeFormatter = DateFormat('h:mm a');
 
     return Scaffold(
       appBar: AppBar(
@@ -199,29 +179,19 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                   ],
                 ),
                 const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Expanded(
-                      child: InkWell(
-                        onTap: () => _selectDate(context),
-                        child: InputDecorator(
-                          decoration: const InputDecoration( labelText: 'Date', border: OutlineInputBorder(), prefixIcon: Icon(Icons.calendar_today), ),
-                          child: Text(dateFormatter.format(_selectedDateTime)),
-                        ),
-                      ),
+
+                InkWell(
+                  onTap: () => _selectDate(context),
+                  child: InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Date',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.calendar_today),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: InkWell(
-                        onTap: () => _selectTime(context),
-                        child: InputDecorator(
-                          decoration: const InputDecoration( labelText: 'Time', border: OutlineInputBorder(), prefixIcon: Icon(Icons.access_time), ),
-                          child: Text(timeFormatter.format(_selectedDateTime)),
-                        ),
-                      ),
-                    ),
-                  ],
+                    child: Text(dateFormatter.format(_selectedDateTime)),
+                  ),
                 ),
+
                 const SizedBox(height: 16),
                 TextFormField(
                   controller: _amountController,
@@ -257,7 +227,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                   controller: _bodyController,
                   maxLines: 4,
                   decoration: InputDecoration( labelText: 'Description / Original Text', border: const OutlineInputBorder(), filled: _isEditMode ? false : (widget.prefillData != null), fillColor: _isEditMode ? null : Colors.grey[100],),
-                  readOnly: (widget.prefillData != null && !_isEditMode), // Prevent editing OCR text
+                  readOnly: (widget.prefillData != null && !_isEditMode),
                 ),
                 const SizedBox(height: 24),
                 _isLoading

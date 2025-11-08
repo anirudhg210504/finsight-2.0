@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:finsight/models/transaction_model.dart';
-import 'package:finsight/screens/add_transaction_screen.dart'; // Keep this import
+import 'package:finsight/screens/add_transaction_screen.dart';
 import 'package:finsight/services/auth_service.dart';
-import 'package:intl/intl.dart';
+import 'package:intl/intl.dart'; // Already imported, used for formatting
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-// Ensure this is the class name!
 class TransactionsTab extends StatefulWidget {
   const TransactionsTab({super.key});
 
@@ -109,7 +108,7 @@ class _TransactionsTabState extends State<TransactionsTab> {
       await Supabase.instance.client
           .from('transactions')
           .delete()
-          .filter('id', 'in', idsToDelete) // Corrected filter
+          .filter('id', 'in', idsToDelete)
           .eq('user_id', user.id);
 
       if(mounted) {
@@ -201,7 +200,7 @@ class _TransactionsTabState extends State<TransactionsTab> {
     );
   }
 
-  AppBar _buildAppBar() {
+  PreferredSizeWidget _buildAppBar() {
     if (_isSelectionMode) {
       return AppBar(
         backgroundColor: Colors.blueGrey[800],
@@ -245,7 +244,7 @@ class _TransactionsTabState extends State<TransactionsTab> {
   @override
   Widget build(BuildContext context) {
     final currencyFormatter = NumberFormat.currency(locale: 'en_IN', symbol: '₹');
-    final dateFormatter = DateFormat('MMM d, yyyy h:mm a');
+    final dateFormatter = DateFormat('MMM d, yyyy');
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -335,25 +334,17 @@ class _TransactionsTabState extends State<TransactionsTab> {
                 subtitle: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      transaction.messageBody,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
                     if (transaction.category != null && transaction.category!.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4.0),
-                        child: Text(
-                          transaction.category!,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey[600],
-                            fontStyle: FontStyle.italic,
-                          ),
+                      Text(
+                        transaction.category!,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey[600],
+                          fontStyle: FontStyle.italic,
                         ),
                       ),
                     Padding(
-                      padding: const EdgeInsets.only(top: 4.0),
+                      padding: EdgeInsets.only(top: (transaction.category != null && transaction.category!.isNotEmpty) ? 4.0 : 0),
                       child: Text(
                         dateFormatter.format(transaction.transactionDate.toLocal()),
                         style: TextStyle(
@@ -379,4 +370,4 @@ class _TransactionsTabState extends State<TransactionsTab> {
       ),
     );
   }
-} // End of _TransactionsTabState
+}

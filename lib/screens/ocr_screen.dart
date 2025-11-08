@@ -1,10 +1,11 @@
 import 'dart:io';
-import 'dart:math'; // For the 'max' function
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:finsight/services/ocr_service.dart';
 import 'package:finsight/models/transaction_model.dart';
 import 'package:finsight/screens/add_transaction_screen.dart';
+import 'package:intl/intl.dart'; // ✅ for formatting date/time
 
 class OcrScreen extends StatefulWidget {
   const OcrScreen({super.key});
@@ -30,121 +31,266 @@ class _OcrScreenState extends State<OcrScreen> {
     try {
       final XFile? image = await _picker.pickImage(source: source);
       if (image != null) {
-        setState(() { _selectedImage = image; });
+        setState(() => _selectedImage = image);
         final result = await _ocrService.processImage(image.path);
-        setState(() {
-          _recognizedText = result.isEmpty ? "No text detected." : result;
-        });
+        setState(() =>
+        _recognizedText = result.isEmpty ? "No text detected." : result);
       } else {
-        setState(() { _recognizedText = "Image selection cancelled."; });
+        setState(() => _recognizedText = "Image selection cancelled.");
       }
     } catch (e) {
-      setState(() {
-        _recognizedText = "Error processing image: $e";
-      });
+      setState(() => _recognizedText = "Error processing image: $e");
     } finally {
-      if (mounted) {
-        setState(() {
-          _isProcessing = false;
-        });
-      }
+      if (mounted) setState(() => _isProcessing = false);
     }
   }
 
-  // --- This is the fixed parsing function ---
   TransactionModel? _parseTransactionDetails(String text) {
     String merchant = "Unknown";
-    double? finalAmount;
-    TransactionType type = TransactionType.debit; // Default to debit for receipts
+    double? amount;
+    TransactionType type = TransactionType.debit;
 
-    final List<String> lines = text.split('\n');
+    final lines = text
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+
     final lowerText = text.toLowerCase();
 
-    // --- 1. Extract Merchant ---
+    // --- Detect merchant name ---
     for (String line in lines) {
-      String trimmedLine = line.trim();
-      // Find the first line that is > 3 chars and not just a number
-      if (trimmedLine.length > 3 && double.tryParse(trimmedLine) == null) {
-        // And isn't a generic receipt line
-        if (!trimmedLine.toLowerCase().contains("invoice") &&
-            !trimmedLine.toLowerCase().contains("receipt")) {
-          merchant = trimmedLine;
-          break; // Found it
-        }
+      final lower = line.toLowerCase();
+      if (!RegExp(r'(road|layout|stage|block|gst|bill|no\.|operator|mc#|invoice)')
+          .hasMatch(lower) &&
+          RegExp(r'[a-zA-Z]').hasMatch(line)) {
+        merchant =
+            line.replaceAll(RegExp(r'[^a-zA-Z0-9 &]'), '').trim().toUpperCase();
+        break;
       }
     }
 
-    // --- 2. Determine Transaction Type ---
-    if (lowerText.contains("credited") || lowerText.contains("received")) {
+    // --- Detect transaction type ---
+    if (lowerText.contains("credited") ||
+        lowerText.contains("refund") ||
+        lowerText.contains("received")) {
       type = TransactionType.credit;
     }
 
-    // --- 3. Extract Amount ---
-    // This regex finds 1,234.56 or 1234.56
-    final RegExp amountRegex = RegExp(r"(\d{1,3}(?:,?\d{3})*\.\d{2})");
-    double savedAmount = 0.0;
+    // --- Extract amount using smart logic ---
+    final extraction = _extractSmartAmount(text);
+    amount = extraction['amount'] as double?;
 
-    // First, find the "saved" amount so we can ignore it.
+    if (amount == null) return null;
+
+    // ✅ Use local system date and time
+    final DateTime now = DateTime.now().toLocal();
+    final formatted = DateFormat('dd-MM-yyyy hh:mm a').format(now);
+    debugPrint("🕓 Transaction captured at (local): $formatted");
+
+    debugPrint("✅ Best Match Line: '${extraction['line']}'");
+    debugPrint(
+        "💡 Confidence: ${(extraction['confidence'] as double).toStringAsFixed(2)}");
+    debugPrint("🎯 Reason: ${extraction['reason']}");
+
+    return TransactionModel(
+      userId: '',
+      senderAddress: merchant,
+      messageBody: text,
+      transactionDate: now, // ✅ Local system time
+      amount: amount,
+      type: type,
+    );
+  }
+
+  // ---------------- SMART AMOUNT DETECTION + CONFIDENCE ----------------
+  Map<String, dynamic> _extractSmartAmount(String ocrText) {
+    final lines = ocrText
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+
+    final amountRegex = RegExp(
+      r'(?:₹|rs\.?|inr)?\s*\b(\d{1,5}(?:,?\d{3})*(?:[.,]\s*\d{1,2})?)\b',
+      caseSensitive: false,
+    );
+
+    double bestScore = -999;
+    double? bestValue;
+    String bestLine = "";
+    String bestReason = "";
+
+    debugPrint("🔍 ===== Analyzing OCR text for total amount =====");
+
     for (int i = 0; i < lines.length; i++) {
-      String lowerLine = lines[i].toLowerCase();
-      // Look for the "saved" keyword
-      if (lowerLine.contains("saved")) {
-        // Check the *next* line (if it exists) for the amount
-        if (i + 1 < lines.length) {
-          String nextLine = lines[i+1];
-          // We must remove commas for parsing (e.g., "1,234.00" -> "1234.00")
-          Match? amountMatch = amountRegex.firstMatch(nextLine.replaceAll(',', ''));
-          if (amountMatch != null) {
-            double? parsedAmount = double.tryParse(amountMatch.group(1)!);
-            if (parsedAmount != null) {
-              savedAmount = parsedAmount;
-              break; // Found it, stop looking
+      final line = lines[i].toLowerCase();
+      if (RegExp(r'(gstin|phone|tel|batch|txn\s*id)').hasMatch(line)) continue;
+
+      final isTotalLike = line.contains(RegExp(
+          r'total|payable|amount|grand|balance|bill amt|bill amount',
+          caseSensitive: false)) ||
+          line.replaceAll('1', 'l').contains('total');
+
+      final matches = amountRegex.allMatches(line);
+
+      // ✅ Handle "total" line with amount on next line
+      if (isTotalLike && matches.isEmpty) {
+        for (int lookAhead = 1; lookAhead <= 2; lookAhead++) {
+          if (i + lookAhead < lines.length) {
+            final next = lines[i + lookAhead].toLowerCase();
+            final nextMatches = amountRegex.allMatches(next);
+            for (final nm in nextMatches) {
+              final raw = nm.group(1);
+              if (raw == null) continue;
+              final parsed =
+              double.tryParse(raw.replaceAll(',', '').replaceAll(' ', ''));
+              if (parsed != null && parsed > 1 && parsed < 100000) {
+                double score = 20 - lookAhead * 2;
+                if (score > bestScore) {
+                  bestScore = score;
+                  bestValue = parsed;
+                  bestLine = lines[i + lookAhead];
+                  bestReason = "[Total on next line +$score]";
+                }
+              }
             }
           }
         }
       }
-    }
 
-    // Now, find all other amounts
-    List<double> allAmounts = [];
-    for (String line in lines) {
-      // Find all matches on this line
-      Iterable<Match> matches = amountRegex.allMatches(line.replaceAll(',', ''));
-      for (Match match in matches) {
-        double? parsedAmount = double.tryParse(match.group(1)!);
-        if (parsedAmount != null) {
-          allAmounts.add(parsedAmount);
+      for (final m in matches) {
+        final raw = m.group(1);
+        if (raw == null) continue;
+
+        final parsed =
+        double.tryParse(raw.replaceAll(',', '').replaceAll(' ', ''));
+        if (parsed == null) continue;
+
+        double score = 0;
+        String reason = "";
+
+        if (isTotalLike) {
+          score += 12;
+          reason += "[Total keyword +12] ";
+        }
+        if (m.group(0)!.contains(RegExp(r'₹|rs|inr', caseSensitive: false))) {
+          score += 3;
+          reason += "[Currency symbol +3] ";
+        }
+        if (raw.contains('.')) {
+          score += 2;
+          reason += "[Has decimal +2] ";
+        }
+        if (parsed >= 50 && parsed < 50000) {
+          score += 2;
+          reason += "[Reasonable amount +2] ";
+        } else if (parsed < 5) {
+          score -= 5;
+          reason += "[Tiny value -5] ";
+        }
+
+        if (line.contains(RegExp(r'saved|discount|save'))) {
+          score -= 15;
+          reason += "[Discount/Saved line -15] ";
+        }
+
+        if (line.contains('%') ||
+            line.contains('cgst') ||
+            line.contains('sgst')) {
+          score -= 10;
+          reason += "[Tax line (%) -10] ";
+        }
+
+        if (line.contains(RegExp(
+            r'\b(order|ord|bill#|invoice|pi|no\.|id|ref)\b',
+            caseSensitive: false))) {
+          score -= 12;
+          reason += "[Order/Invoice line -12] ";
+        }
+
+        if (!isTotalLike && RegExp(r'[a-zA-Z]+\d+').hasMatch(line)) {
+          score -= 15;
+          reason += "[AlphaNumeric code -15] ";
+        }
+
+        if (line.length < 8 && parsed >= 100 && parsed <= 999) {
+          score -= 15;
+          reason += "[Short numeric code -15] ";
+        }
+
+        if (RegExp(r'\b\d+(\.\d+)?\s+\d+(\.\d+)?\s+\d+(\.\d+)?')
+            .hasMatch(line)) {
+          score -= 4;
+          reason += "[Item row -4] ";
+        }
+
+        score += (i / lines.length) * 1.5;
+        reason += "[Bottom +${(i / lines.length * 1.5).toStringAsFixed(1)}] ";
+
+        if (parsed < 10) {
+          final nearby = lines.skip(max(0, i - 3)).take(6).join(' ');
+          if (RegExp(r'(\d{2,3}\.\d{1,2})').hasMatch(nearby)) {
+            score -= 10;
+            reason += "[Tiny vs nearby large -10] ";
+          }
+        }
+
+        debugPrint(
+            "Line ${i + 1}: '$line' => ₹$parsed | Score: $score | $reason");
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestValue = parsed;
+          bestLine = lines[i];
+          bestReason = reason;
         }
       }
     }
 
-    // Filter out the saved amount
-    List<double> filteredAmounts = allAmounts.where((amount) => amount != savedAmount).toList();
+    // Fallback if nothing detected
+    if (bestValue == null) {
+      final all = amountRegex
+          .allMatches(ocrText)
+          .map((m) {
+        final raw = m.group(1);
+        if (raw == null) return null;
+        return double.tryParse(raw.replaceAll(',', '').replaceAll(' ', ''));
+      })
+          .whereType<double>()
+          .where((v) => v > 1 && v < 20000)
+          .toList();
 
-    // If we have no amounts left, we failed.
-    if (filteredAmounts.isEmpty) {
-      return null;
+      if (all.isNotEmpty) bestValue = all.reduce(max);
+      bestLine = "(fallback largest)";
+      bestReason = "No confident match — fallback to largest";
     }
 
-    // The total is the largest remaining amount.
-    finalAmount = filteredAmounts.reduce(max);
+    final confidence =
+    (bestScore <= 0) ? 0 : min(1.0, (bestScore / 18.0));
 
-    // --- 4. Return a partial TransactionModel ---
-    if (finalAmount != null) {
-      return TransactionModel(
-        userId: '', // This will be filled by AuthService on the next screen
-        senderAddress: merchant,
-        messageBody: text, // Save the full OCR text
-        transactionDate: DateTime.now(), // Use current time
-        amount: finalAmount,
-        type: type,
-      );
+    if (confidence < 0.4) {
+      debugPrint(
+          "⚠️ Low confidence (${confidence.toStringAsFixed(2)}) — ignoring amount.");
+      return {
+        'amount': null,
+        'confidence': confidence,
+        'line': bestLine,
+        'reason': "$bestReason [Rejected: confidence < 0.4]",
+      };
     }
 
-    return null; // Return null if no valid amount was found
+    debugPrint(
+        "✅ Selected ₹$bestValue | Line: '$bestLine' | Score: $bestScore | Confidence: ${confidence.toStringAsFixed(2)}");
+    debugPrint("============================================");
+
+    return {
+      'amount': bestValue,
+      'confidence': confidence,
+      'line': bestLine,
+      'reason': bestReason,
+    };
   }
-  // --- END OF UPDATED FUNCTION ---
-
 
   @override
   void dispose() {
@@ -174,21 +320,28 @@ class _OcrScreenState extends State<OcrScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
                 ElevatedButton.icon(
-                  onPressed: _isProcessing ? null : () => _pickAndProcessImage(ImageSource.camera),
+                  onPressed: _isProcessing
+                      ? null
+                      : () => _pickAndProcessImage(ImageSource.camera),
                   icon: const Icon(Icons.camera_alt, color: Colors.white),
-                  label: const Text("Camera", style: TextStyle(color: Colors.white)),
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF006241)),
+                  label: const Text("Camera",
+                      style: TextStyle(color: Colors.white)),
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF006241)),
                 ),
                 ElevatedButton.icon(
-                  onPressed: _isProcessing ? null : () => _pickAndProcessImage(ImageSource.gallery),
+                  onPressed: _isProcessing
+                      ? null
+                      : () => _pickAndProcessImage(ImageSource.gallery),
                   icon: const Icon(Icons.photo_library, color: Colors.white),
-                  label: const Text("Gallery", style: TextStyle(color: Colors.white)),
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF006241)),
+                  label: const Text("Gallery",
+                      style: TextStyle(color: Colors.white)),
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF006241)),
                 ),
               ],
             ),
             const SizedBox(height: 20),
-
             if (_selectedImage != null)
               Container(
                 height: 200,
@@ -202,7 +355,6 @@ class _OcrScreenState extends State<OcrScreen> {
                   ),
                 ),
               ),
-
             Container(
               padding: const EdgeInsets.all(12.0),
               decoration: BoxDecoration(
@@ -212,10 +364,10 @@ class _OcrScreenState extends State<OcrScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    "Recognized Text:",
-                    style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey[700]),
-                  ),
+                  Text("Recognized Text:",
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.grey[700])),
                   const SizedBox(height: 8),
                   _isProcessing
                       ? const Center(child: CircularProgressIndicator())
@@ -231,24 +383,26 @@ class _OcrScreenState extends State<OcrScreen> {
                   _recognizedText.isEmpty)
                   ? null
                   : () {
+                final TransactionModel? parsed =
+                _parseTransactionDetails(_recognizedText);
 
-                // 1. Parse the text
-                final TransactionModel? parsedData = _parseTransactionDetails(_recognizedText);
-
-                if (parsedData == null) {
+                if (parsed == null) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("Could not parse an amount from the text. Please enter manually."))
+                    const SnackBar(
+                        content: Text(
+                            "Could not extract amount confidently. Please enter manually.")),
                   );
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const AddTransactionScreen()),
-                  );
-                } else {
-                  // 2. Navigate to the AddTransactionScreen with the pre-filled data
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (context) => AddTransactionScreen(prefillData: parsedData),
+                        builder: (_) => const AddTransactionScreen()),
+                  );
+                } else {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          AddTransactionScreen(prefillData: parsed),
                     ),
                   );
                 }
@@ -258,8 +412,8 @@ class _OcrScreenState extends State<OcrScreen> {
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
               child: const Text(
-                  "Process & Confirm Transaction",
-                  style: TextStyle(color: Colors.white, fontSize: 16)
+                "Process & Confirm Transaction",
+                style: TextStyle(color: Colors.white, fontSize: 16),
               ),
             ),
           ],

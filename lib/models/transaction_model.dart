@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:intl/intl.dart'; // ✅ For date formatting
 
 enum TransactionType { credit, debit }
 
@@ -28,10 +29,14 @@ class TransactionModel {
       'user_id': userId,
       'sender_address': senderAddress,
       'message_body': messageBody,
-      'transaction_date': transactionDate.toIso8601String(),
+
+      // ✅ Store only the local DATE (no time)
+      'transaction_date':
+      DateFormat("yyyy-MM-dd").format(transactionDate.toLocal()),
+
       'amount': amount,
       'type': type == TransactionType.credit ? 'credit' : 'debit',
-      'category': category, // --- ADDED THIS LINE ---
+      'category': category,
     };
   }
 
@@ -41,12 +46,15 @@ class TransactionModel {
       userId: json['user_id'],
       senderAddress: json['sender_address'],
       messageBody: json['message_body'],
-      transactionDate: DateTime.parse(json['transaction_date']),
+
+      // ✅ Parse only the date part as local time
+      transactionDate: DateTime.parse(json['transaction_date']).toLocal(),
+
       amount: (json['amount'] as num).toDouble(),
       type: json['type'] == 'credit'
           ? TransactionType.credit
           : TransactionType.debit,
-      category: json['category'], // --- ADDED THIS LINE ---
+      category: json['category'],
     );
   }
 }
