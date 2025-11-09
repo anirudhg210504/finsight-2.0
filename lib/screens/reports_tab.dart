@@ -1,28 +1,30 @@
+// lib/screens/reports_tab.dart
+import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:finsight/models/transaction_model.dart';
-import 'package:finsight/services/auth_service.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'dart:math';
+import 'package:finsight/models/transaction_model.dart';
+import 'package:finsight/services/auth_service.dart';
 
-// Enums to manage UI state
 enum ReportPeriod { weekly, monthly, yearly }
+enum ReportType { byTime, byCategory }
 enum ChartType { bar, line, pie }
 
 class ReportsTab extends StatefulWidget {
   const ReportsTab({super.key});
-
   @override
   State<ReportsTab> createState() => _ReportsTabState();
 }
 
 class _ReportsTabState extends State<ReportsTab> {
-  ReportPeriod _selectedPeriod = ReportPeriod.monthly;
-  ChartType _selectedChartType = ChartType.bar;
+  final _authService = AuthService();
   List<TransactionModel> _transactions = [];
   bool _isLoading = true;
-  final _authService = AuthService();
+
+  ReportPeriod _period = ReportPeriod.monthly;
+  ReportType _reportType = ReportType.byTime;
+  ChartType _chartType = ChartType.bar;
 
   // Colors
   static const Color debitColor = Colors.red;
@@ -36,158 +38,98 @@ class _ReportsTabState extends State<ReportsTab> {
   }
 
   Future<void> _loadTransactions() async {
-    if (!_isLoading) setState(() => _isLoading = true);
-
+    setState(() => _isLoading = true);
     try {
       final user = _authService.currentUser;
-      if (user == null) throw Exception("User not logged in");
+      if (user == null) throw Exception('User not logged in');
 
-      final response = await Supabase.instance.client
+      final data = await Supabase.instance.client
           .from('transactions')
           .select()
           .eq('user_id', user.id)
-          .order('transaction_date', ascending: false);
+          .order('transaction_date', ascending: true);
 
-      final transactions = (response as List)
-          .map((map) => TransactionModel.fromJson(map))
+      _transactions = (data as List)
+          .map((m) => TransactionModel.fromJson(m as Map<String, dynamic>))
           .toList();
-
-      if (mounted) {
-        setState(() {
-          _transactions = transactions;
-          _isLoading = false;
-        });
-      }
     } catch (e) {
       if (mounted) {
-        setState(() => _isLoading = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Error loading reports: ${e.toString()}"))
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Load failed: $e')));
       }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final report = _generateReportData();
+
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
-        title: const Text("Reports"),
+        title: const Text('Reports'),
         backgroundColor: const Color(0xFF006241),
-        titleTextStyle: const TextStyle(
-          color: Colors.white,
-          fontSize: 20,
-          fontWeight: FontWeight.bold,
-        ),
       ),
-      body: RefreshIndicator(
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _transactions.isEmpty
+          ? const Center(child: Text('No transactions found'))
+          : RefreshIndicator(
         onRefresh: _loadTransactions,
-        child: _isLoading
-            ? const Center(child: CircularProgressIndicator())
-            : _buildReportBody(),
-      ),
-    );
-  }
-
-  Widget _buildReportBody() {
-    final chartData = _generateChartData();
-
-    if (chartData.dataPoints.isEmpty || (chartData.total1 == 0 && chartData.total2 == 0)) {
-      return SingleChildScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            children: [
-              _buildPeriodToggleButtons(),
-              const SizedBox(height: 24),
-              const Center(
-                child: Text(
-                  "No data for this period.",
-                  style: TextStyle(fontSize: 18),
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    return SingleChildScrollView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _buildPeriodToggleButtons(),
-          const SizedBox(height: 24),
-
-          Text(
-            chartData.title,
-            style: const TextStyle(fontSize: 16, color: Colors.grey),
-            textAlign: TextAlign.center,
-          ),
-
-          if (_selectedPeriod == ReportPeriod.monthly)
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            _buildPeriodSelector(),
+            const SizedBox(height: 16),
+            _buildReportTypeSelector(),
+            const SizedBox(height: 16),
             Text(
-              NumberFormat.currency(locale: 'en_IN', symbol: '₹').format(chartData.total1),
-              style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: debitColor),
+              report.title,
               textAlign: TextAlign.center,
-            )
-          else
+              style: const TextStyle(fontSize: 16, color: Colors.grey),
+            ),
+            const SizedBox(height: 8),
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                _buildSummaryText("Spent", chartData.total1, debitColor),
+                _summaryTile('Spent', report.totalDebit, Colors.red),
                 const SizedBox(width: 24),
-                _buildSummaryText("Income", chartData.total2, creditColor),
+                _summaryTile('Income', report.totalCredit, Colors.green),
               ],
             ),
-
-          const SizedBox(height: 24),
-          _buildChartTypeToggles(), // This is the fixed widget
-          const SizedBox(height: 24),
-
-          AspectRatio(
-            aspectRatio: 1.5,
-            child: _buildChart(chartData), // This switch is now safe
-          ),
-        ],
+            const SizedBox(height: 16),
+            _buildChartTypeSelector(),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: _chartType == ChartType.pie
+                  ? MediaQuery.of(context).size.width * 1.1
+                  : MediaQuery.of(context).size.width * 0.7,
+              child: _buildChart(report),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildSummaryText(String title, double total, Color color) {
-    return Column(
-      children: [
-        Text(title, style: const TextStyle(fontSize: 16, color: Colors.grey)),
-        Text(
-          NumberFormat.currency(locale: 'en_IN', symbol: '₹').format(total),
-          style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: color),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildPeriodToggleButtons() {
+  Widget _buildPeriodSelector() {
     return Center(
       child: ToggleButtons(
-        isSelected: [
-          _selectedPeriod == ReportPeriod.weekly,
-          _selectedPeriod == ReportPeriod.monthly,
-          _selectedPeriod == ReportPeriod.yearly,
-        ],
-        onPressed: (index) {
-          setState(() {
-            _selectedPeriod = ReportPeriod.values[index];
-            _selectedChartType = ChartType.bar;
-          });
-        },
         borderRadius: BorderRadius.circular(8),
+        fillColor: const Color(0xFF006241),
         selectedColor: Colors.white,
-        fillColor: primaryChartColor,
-        color: primaryChartColor,
+        color: const Color(0xFF006241),
+        isSelected: [
+          _period == ReportPeriod.weekly,
+          _period == ReportPeriod.monthly,
+          _period == ReportPeriod.yearly
+        ],
+        onPressed: (i) => setState(() {
+          _period = ReportPeriod.values[i];
+          _reportType = ReportType.byTime;
+          _chartType = ChartType.bar;
+        }),
         children: const [
           Padding(padding: EdgeInsets.symmetric(horizontal: 16), child: Text('Weekly')),
           Padding(padding: EdgeInsets.symmetric(horizontal: 16), child: Text('Monthly')),
@@ -197,181 +139,215 @@ class _ReportsTabState extends State<ReportsTab> {
     );
   }
 
-  // --- THIS IS THE FIXED TOGGLE BUTTON LOGIC ---
-  Widget _buildChartTypeToggles() {
-    bool isCategorical = _selectedPeriod == ReportPeriod.monthly;
-    bool isTimeSeries = !isCategorical;
-
-    // Auto-switch logic if the current chart is not allowed
-    if (isTimeSeries && _selectedChartType == ChartType.pie) {
-      _selectedChartType = ChartType.bar;
-    }
-    if (isCategorical && _selectedChartType == ChartType.line) {
-      _selectedChartType = ChartType.bar;
-    }
-
-    // Build the lists dynamically based on context
-    List<Widget> children = [
-      const Padding(padding: EdgeInsets.symmetric(horizontal: 16), child: Icon(Icons.bar_chart)),
-    ];
-    List<bool> isSelected = [
-      _selectedChartType == ChartType.bar,
-    ];
-
-    if (isTimeSeries) {
-      children.add(const Padding(padding: EdgeInsets.symmetric(horizontal: 16), child: Icon(Icons.show_chart)));
-      isSelected.add(_selectedChartType == ChartType.line);
-    }
-
-    if (isCategorical) {
-      children.add(const Padding(padding: EdgeInsets.symmetric(horizontal: 16), child: Icon(Icons.pie_chart)));
-      isSelected.add(_selectedChartType == ChartType.pie);
-    }
-
+  Widget _buildReportTypeSelector() {
     return Center(
       child: ToggleButtons(
-        isSelected: isSelected,
-        onPressed: (index) {
-          setState(() {
-            if (isTimeSeries) {
-              // Buttons are [Bar, Line]
-              _selectedChartType = (index == 0) ? ChartType.bar : ChartType.line;
-            } else { // isCategorical
-              // Buttons are [Bar, Pie]
-              _selectedChartType = (index == 0) ? ChartType.bar : ChartType.pie;
-            }
-          });
-        },
         borderRadius: BorderRadius.circular(8),
-        children: children,
-      ),
-    );
-  }
-  // --- END OF FIX ---
-
-  Widget _buildChart(ReportChartData data) {
-    // This logic is now safe because _buildChartTypeToggles fixes the state first
-    switch (_selectedChartType) {
-      case ChartType.line:
-        return _buildLineChart(data);
-      case ChartType.pie:
-        return _buildPieChart(data);
-      case ChartType.bar:
-      default:
-        return _buildBarChart(data);
-    }
-  }
-
-  Widget _buildBarChart(ReportChartData data) {
-    final bool isMonthly = _selectedPeriod == ReportPeriod.monthly;
-    final double maxY = (data.dataPoints.map((p) => p.value1 + p.value2).reduce(max) * 1.2).clamp(100.0, double.infinity);
-
-    return BarChart(
-      BarChartData(
-        alignment: BarChartAlignment.spaceAround,
-        maxY: maxY,
-        barTouchData: BarTouchData(
-          touchTooltipData: BarTouchTooltipData(
-            getTooltipItem: (group, groupIndex, rod, rodIndex) {
-              final point = data.dataPoints[group.x];
-              String text = '${point.label}\n';
-              if (isMonthly) {
-                text += NumberFormat.currency(locale: 'en_IN', symbol: '₹').format(point.value1);
-              } else {
-                text += 'Spent: ${NumberFormat.currency(locale: 'en_IN', symbol: '₹').format(point.value1)}\n';
-                text += 'Income: ${NumberFormat.currency(locale: 'en_IN', symbol: '₹').format(point.value2)}';
-              }
-              return BarTooltipItem(text, const TextStyle(color: Colors.white));
-            },
-          ),
-        ),
-        titlesData: _buildChartTitles(data),
-        borderData: FlBorderData(show: false),
-        gridData: _buildGridData(maxY),
-        barGroups: List.generate(data.dataPoints.length, (i) {
-          final point = data.dataPoints[i];
-          return BarChartGroupData(
-            x: i,
-            barRods: isMonthly
-                ? [
-              BarChartRodData(
-                toY: point.value1,
-                color: Colors.primaries[i % Colors.primaries.length],
-                width: 16,
-                borderRadius: BorderRadius.circular(4),
-              ),
-            ]
-                : [
-              BarChartRodData(
-                  toY: point.value1 + point.value2,
-                  color: creditColor,
-                  width: 16,
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(4),
-                    topRight: Radius.circular(4),
-                  ),
-                  rodStackItems: [
-                    BarChartRodStackItem(0, point.value1, debitColor),
-                  ]
-              ),
-            ],
-          );
+        isSelected: [
+          _reportType == ReportType.byTime,
+          _reportType == ReportType.byCategory,
+        ],
+        onPressed: (i) => setState(() {
+          _reportType = ReportType.values[i];
+          _chartType = (_reportType == ReportType.byCategory) ? ChartType.pie : ChartType.bar;
         }),
-      ),
-    );
-  }
-
-  Widget _buildLineChart(ReportChartData data) {
-    final double maxY = (data.dataPoints.map((p) => max(p.value1, p.value2)).reduce(max) * 1.2).clamp(100.0, double.infinity);
-
-    final debitSpots = List.generate(data.dataPoints.length, (i) {
-      return FlSpot(i.toDouble(), data.dataPoints[i].value1);
-    });
-    final creditSpots = List.generate(data.dataPoints.length, (i) {
-      return FlSpot(i.toDouble(), data.dataPoints[i].value2);
-    });
-
-    return LineChart(
-      LineChartData(
-        maxY: maxY,
-        minY: 0,
-        gridData: _buildGridData(maxY),
-        borderData: FlBorderData(show: false),
-        titlesData: _buildChartTitles(data),
-        lineBarsData: [
-          _buildLineBarData(debitSpots, debitColor),
-          _buildLineBarData(creditSpots, creditColor),
+        children: const [
+          Padding(padding: EdgeInsets.symmetric(horizontal: 16), child: Text('By Time')),
+          Padding(padding: EdgeInsets.symmetric(horizontal: 16), child: Text('By Category')),
         ],
       ),
     );
   }
 
-  LineChartBarData _buildLineBarData(List<FlSpot> spots, Color color) {
-    return LineChartBarData(
-      spots: spots,
-      isCurved: true,
-      color: color,
-      barWidth: 4,
-      isStrokeCapRound: true,
-      dotData: const FlDotData(show: false),
-      belowBarData: BarAreaData(
-        show: true,
-        color: color.withOpacity(0.2),
+  Widget _buildChartTypeSelector() {
+    bool isByCategory = _reportType == ReportType.byCategory;
+
+    if (isByCategory && _chartType == ChartType.line) {
+      _chartType = ChartType.pie;
+    }
+    if (!isByCategory && _chartType == ChartType.pie) {
+      _chartType = ChartType.bar;
+    }
+
+    return Center(
+      child: ToggleButtons(
+        borderRadius: BorderRadius.circular(8),
+        isSelected: [
+          _chartType == ChartType.bar,
+          isByCategory
+              ? _chartType == ChartType.pie
+              : _chartType == ChartType.line,
+        ],
+        onPressed: (i) => setState(() {
+          if (isByCategory) {
+            _chartType = (i == 0) ? ChartType.bar : ChartType.pie;
+          } else {
+            _chartType = (i == 0) ? ChartType.bar : ChartType.line;
+          }
+        }),
+        children: [
+          const Padding(padding: EdgeInsets.all(8), child: Icon(Icons.bar_chart)),
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: Icon(isByCategory ? Icons.pie_chart : Icons.show_chart),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildPieChart(ReportChartData data) {
-    // Pie chart is always for monthly (debit only)
-    return PieChart(
-      PieChartData(
-        sections: List.generate(data.dataPoints.length, (i) {
-          final point = data.dataPoints[i];
-          final percentage = (point.value1 / data.total1) * 100;
-          return PieChartSectionData(
-            color: Colors.primaries[i % Colors.primaries.length],
-            value: point.value1,
+  Widget _summaryTile(String label, double value, Color color) {
+    return Column(
+      children: [
+        Text(label, style: const TextStyle(color: Colors.grey)),
+        const SizedBox(height: 4),
+        Text(
+          _formatCurrency(value),
+          style: TextStyle(color: color, fontSize: 20, fontWeight: FontWeight.bold),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildChart(ReportData report) {
+    switch (_chartType) {
+      case ChartType.line:
+        return _buildLineChart(report);
+      case ChartType.pie:
+        return _buildPieChart(report);
+      case ChartType.bar:
+      default:
+        return _buildBarChart(report);
+    }
+  }
+
+  Widget _buildBarChart(ReportData report) {
+    if (report.data.isEmpty) return const SizedBox();
+    final maxDebit = report.data.map((p) => p.debit).reduce(max);
+    final maxCredit = report.data.map((p) => p.credit).reduce(max);
+    final maxY = max(100.0, max(maxDebit, maxCredit) * 1.2);
+
+    return BarChart(
+      BarChartData(
+        alignment: BarChartAlignment.spaceAround,
+        minY: 0,
+        maxY: maxY,
+        barTouchData: BarTouchData(
+          enabled: true,
+          touchTooltipData: BarTouchTooltipData(
+            tooltipRoundedRadius: 6,
+            tooltipPadding: const EdgeInsets.all(8),
+            getTooltipItem: (group, groupIndex, rod, rodIndex) {
+              final data = report.data[group.x.toInt()];
+              final amount = rod.toY;
+              final isDebit = rodIndex == 0;
+              final label = data.label;
+              final typeText = isDebit ? "spent" : "received";
+              final color = isDebit ? Colors.redAccent : Colors.greenAccent;
+              return BarTooltipItem(
+                "₹${amount.toStringAsFixed(2)} $typeText on $label",
+                TextStyle(color: color, fontSize: 12),
+              );
+            },
+          ),
+        ),
+        barGroups: List.generate(report.data.length, (i) {
+          final p = report.data[i];
+          return BarChartGroupData(
+            x: i,
+            barsSpace: 6,
+            barRods: [
+              BarChartRodData(
+                toY: p.debit,
+                width: 8,
+                color: debitColor,
+              ),
+              BarChartRodData(
+                toY: p.credit,
+                width: 8,
+                color: creditColor,
+              ),
+            ],
+          );
+        }),
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: false,
+          horizontalInterval: maxY / 4,
+          getDrawingHorizontalLine: (_) =>
+              FlLine(color: Colors.grey[300], strokeWidth: 1),
+        ),
+        borderData: FlBorderData(show: false),
+        titlesData: _titles(report),
+      ),
+    );
+  }
+
+  Widget _buildLineChart(ReportData report) {
+    if (report.data.isEmpty) return const SizedBox();
+    final maxY = max(100.0, report.data.map((p) => max(p.debit, p.credit)).reduce(max) * 1.2);
+
+    return LineChart(
+      LineChartData(
+        minY: 0,
+        maxY: maxY,
+        clipData: FlClipData.all(),
+        gridData: FlGridData(
+          show: true,
+          horizontalInterval: maxY / 4,
+          getDrawingHorizontalLine: (_) =>
+              FlLine(color: Colors.grey[300], strokeWidth: 1),
+        ),
+        titlesData: _titles(report),
+        borderData: FlBorderData(show: false),
+        lineBarsData: [
+          LineChartBarData(
+            isCurved: true,
+            color: Colors.red,
+            barWidth: 3,
+            spots: [
+              for (int i = 0; i < report.data.length; i++)
+                FlSpot(i.toDouble(), report.data[i].debit)
+            ],
+            belowBarData: BarAreaData(show: true, color: Colors.red.withOpacity(0.15)),
+          ),
+          LineChartBarData(
+            isCurved: true,
+            color: Colors.green,
+            barWidth: 3,
+            spots: [
+              for (int i = 0; i < report.data.length; i++)
+                FlSpot(i.toDouble(), report.data[i].credit)
+            ],
+            belowBarData: BarAreaData(show: true, color: Colors.green.withOpacity(0.15)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPieChart(ReportData report) {
+    if (report.data.isEmpty) {
+      return const Center(child: Text("No data for pie chart."));
+    }
+
+    // Create sections for both debit and credit in the same chart
+    final List<PieChartSectionData> sections = [];
+    final List<_PieLegendItem> legendItems = [];
+    int colorIndex = 0;
+
+    // Add debit sections
+    for (var dataPoint in report.data) {
+      if (dataPoint.debit > 0) {
+        final totalAmount = report.totalDebit + report.totalCredit;
+        final percentage = (dataPoint.debit / totalAmount) * 100;
+
+        sections.add(
+          PieChartSectionData(
+            color: Colors.primaries[colorIndex % Colors.primaries.length],
+            value: dataPoint.debit,
             title: '${percentage.toStringAsFixed(0)}%',
+            showTitle: percentage > 5, // Only show if slice is > 5%
             radius: 100,
             titleStyle: const TextStyle(
               fontSize: 14,
@@ -379,45 +355,135 @@ class _ReportsTabState extends State<ReportsTab> {
               color: Colors.white,
               shadows: [Shadow(color: Colors.black, blurRadius: 2)],
             ),
+          ),
+        );
+
+        legendItems.add(_PieLegendItem(
+          label: '${dataPoint.label} (Spent)',
+          color: Colors.primaries[colorIndex % Colors.primaries.length],
+        ));
+
+        colorIndex++;
+      }
+    }
+
+    // Add credit sections
+    for (var dataPoint in report.data) {
+      if (dataPoint.credit > 0) {
+        final totalAmount = report.totalDebit + report.totalCredit;
+        final percentage = (dataPoint.credit / totalAmount) * 100;
+
+        sections.add(
+          PieChartSectionData(
+            color: Colors.accents[colorIndex % Colors.accents.length],
+            value: dataPoint.credit,
+            title: '${percentage.toStringAsFixed(0)}%',
+            showTitle: percentage > 5, // Only show if slice is > 5%
+            radius: 100,
+            titleStyle: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+              shadows: [Shadow(color: Colors.black, blurRadius: 2)],
+            ),
+          ),
+        );
+
+        legendItems.add(_PieLegendItem(
+          label: '${dataPoint.label} (Income)',
+          color: Colors.accents[colorIndex % Colors.accents.length],
+        ));
+
+        colorIndex++;
+      }
+    }
+
+    return Column(
+      children: [
+        Expanded(
+          child: PieChart(
+            PieChartData(
+              sections: sections,
+              sectionsSpace: 2,
+              centerSpaceRadius: 40,
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _buildCombinedLegend(legendItems),
+      ],
+    );
+  }
+
+  Widget _buildCombinedLegend(List<_PieLegendItem> items) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0),
+      child: Wrap(
+        spacing: 12.0,
+        runSpacing: 8.0,
+        alignment: WrapAlignment.center,
+        children: items.map((item) {
+          return Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(width: 12, height: 12, color: item.color),
+              const SizedBox(width: 4),
+              Text(item.label, style: const TextStyle(fontSize: 11)),
+            ],
           );
-        }),
-        sectionsSpace: 2,
-        centerSpaceRadius: 40,
+        }).toList(),
       ),
     );
   }
 
-  FlTitlesData _buildChartTitles(ReportChartData data) {
+  FlTitlesData _titles(ReportData report) {
+    final n = report.data.length;
+
+    double interval = 1.0;
+    bool rotate = false;
+
+    if (_period == ReportPeriod.monthly && _reportType == ReportType.byTime) {
+      interval = max(1, (n / 8).ceil()).toDouble();
+    }
+    if (_reportType == ReportType.byCategory && n > 6) {
+      rotate = true;
+    }
+
     return FlTitlesData(
-      show: true,
-      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
       rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
       leftTitles: AxisTitles(
         sideTitles: SideTitles(
-          showTitles: true,
-          reservedSize: 40,
-          getTitlesWidget: (value, meta) {
-            if (value == 0 || value == meta.max) return const Text('');
-            return Text(
-              NumberFormat.compactSimpleCurrency(locale: 'en_IN').format(value),
-              style: const TextStyle(fontSize: 10),
-            );
-          },
-        ),
+            showTitles: true,
+            reservedSize: 50,
+            getTitlesWidget: (v, _) {
+              if (v <= 0) return const SizedBox();
+              return Text(_formatIndianUnits(v),
+                  style: const TextStyle(fontSize: 10));
+            }),
       ),
       bottomTitles: AxisTitles(
         sideTitles: SideTitles(
           showTitles: true,
-          reservedSize: 38,
-          getTitlesWidget: (value, meta) {
-            final index = value.toInt();
-            if (index >= data.dataPoints.length) return const Text('');
+          reservedSize: rotate ? 45 : 30,
+          interval: interval,
+          getTitlesWidget: (v, meta) {
+            final idx = v.toInt();
+            if (idx < 0 || idx >= report.data.length) return const SizedBox();
+            if (idx % interval.toInt() != 0) return const SizedBox();
+
+            String label = report.data[idx].label;
+            if (rotate && label.length > 8) {
+              label = '${label.substring(0, 7)}...';
+            }
+
             return SideTitleWidget(
               axisSide: meta.axisSide,
-              space: 4.0,
+              space: 4,
+              angle: rotate ? 1.05 : 0,
               child: Text(
-                data.dataPoints[index].label,
-                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+                label,
+                style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold),
               ),
             );
           },
@@ -426,156 +492,164 @@ class _ReportsTabState extends State<ReportsTab> {
     );
   }
 
-  FlGridData _buildGridData(double maxY) {
-    return FlGridData(
-      show: true,
-      drawVerticalLine: false,
-      horizontalInterval: (maxY / 4).clamp(1.0, double.infinity),
-      getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey[300], strokeWidth: 1),
-    );
+  String _formatCurrency(double value) {
+    final f = NumberFormat.currency(locale: 'en_IN', symbol: '₹');
+    return f.format(value);
   }
 
-  ReportChartData _generateChartData() {
-    final now = DateTime.now();
-    switch (_selectedPeriod) {
+  String _formatIndianUnits(double v) {
+    if (v < 1000) return "₹${v.toStringAsFixed(0)}";
+    if (v >= 10000000) return "₹${(v / 10000000).toStringAsFixed(1)}Cr";
+    if (v >= 100000) return "₹${(v / 100000).toStringAsFixed(1)}L";
+    if (v >= 1000) return "₹${(v / 1000).toStringAsFixed(1)}K";
+    return "₹${v.toStringAsFixed(0)}";
+  }
+
+  ReportData _generateReportData() {
+    final now = DateUtils.dateOnly(DateTime.now());
+    if (_transactions.isEmpty) return ReportData([], 'No data', 0, 0);
+
+    DateTime start, end;
+    String title;
+    switch (_period) {
       case ReportPeriod.weekly:
-        return _getWeeklyData(now);
+        start = now.subtract(Duration(days: now.weekday - 1));
+        end = start.add(const Duration(days: 6));
+        title = 'This Week';
+        break;
       case ReportPeriod.monthly:
-        return _getMonthlyData(now);
+        start = DateTime(now.year, now.month, 1);
+        end = DateTime(now.year, now.month + 1, 0);
+        title = 'This Month';
+        break;
       case ReportPeriod.yearly:
-        return _getYearlyData(now);
+        start = DateTime(now.year, 1, 1);
+        end = DateTime(now.year, 12, 31);
+        title = 'This Year';
+        break;
+    }
+
+    final txs = _transactions.where((t) {
+      final d = DateUtils.dateOnly(t.transactionDate);
+      return !d.isBefore(start) && !d.isAfter(end);
+    }).toList();
+
+    if (_reportType == ReportType.byTime) {
+      if (_period == ReportPeriod.weekly) {
+        return _generateWeeklyByTime(txs, title);
+      } else if (_period == ReportPeriod.monthly) {
+        return _generateMonthlyByTime(txs, title, end.day);
+      } else {
+        return _generateYearlyByTime(txs, title);
+      }
+    } else {
+      return _generateDataByCategory(txs, title);
     }
   }
 
-  ReportChartData _getWeeklyData(DateTime now) {
-    final startOfWeek = now.subtract(Duration(days: now.weekday - 1));
-    final endOfWeek = startOfWeek.add(const Duration(days: 6, hours: 23, minutes: 59));
+  ReportData _generateWeeklyByTime(List<TransactionModel> txs, String title) {
+    final days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    final debit = List.filled(7, 0.0);
+    final credit = List.filled(7, 0.0);
+    double totalDebit = 0, totalCredit = 0;
+    for (var t in txs) {
+      final i = t.transactionDate.weekday - 1;
+      if (t.type == TransactionType.debit) {
+        debit[i] += t.amount;
+        totalDebit += t.amount;
+      } else {
+        credit[i] += t.amount;
+        totalCredit += t.amount;
+      }
+    }
+    final points = List.generate(7, (i) => DataPoint(days[i], debit[i], credit[i]));
+    return ReportData(points, title, totalDebit, totalCredit);
+  }
 
-    final thisWeekTxs = _transactions.where((tx) {
-      return tx.transactionDate.isAfter(DateUtils.dateOnly(startOfWeek)) &&
-          tx.transactionDate.isBefore(endOfWeek);
-    }).toList();
+  ReportData _generateMonthlyByTime(List<TransactionModel> txs, String title, int daysInMonth) {
+    final debit = List.filled(daysInMonth, 0.0);
+    final credit = List.filled(daysInMonth, 0.0);
+    double totalDebit = 0, totalCredit = 0;
+    for (var t in txs) {
+      final d = t.transactionDate.day - 1;
+      if (t.type == TransactionType.debit) {
+        debit[d] += t.amount;
+        totalDebit += t.amount;
+      } else {
+        credit[d] += t.amount;
+        totalCredit += t.amount;
+      }
+    }
+    final points = List.generate(daysInMonth, (i) => DataPoint('${i + 1}', debit[i], credit[i]));
+    return ReportData(points, '$title (by Day)', totalDebit, totalCredit);
+  }
 
-    final dailyDebits = List.filled(7, 0.0);
-    final dailyCredits = List.filled(7, 0.0);
-    double totalDebit = 0;
-    double totalCredit = 0;
+  ReportData _generateYearlyByTime(List<TransactionModel> txs, String title) {
+    final months = DateFormat.MMM().dateSymbols.SHORTMONTHS;
+    final debit = List.filled(12, 0.0);
+    final credit = List.filled(12, 0.0);
+    double totalDebit = 0, totalCredit = 0;
+    for (var t in txs) {
+      final m = t.transactionDate.month - 1;
+      if (t.type == TransactionType.debit) {
+        debit[m] += t.amount;
+        totalDebit += t.amount;
+      } else {
+        credit[m] += t.amount;
+        totalCredit += t.amount;
+      }
+    }
+    final points = List.generate(12, (i) => DataPoint(months[i], debit[i], credit[i]));
+    return ReportData(points, title, totalDebit, totalCredit);
+  }
 
-    for (var tx in thisWeekTxs) {
+  ReportData _generateDataByCategory(List<TransactionModel> txs, String title) {
+    final debitCat = <String, double>{};
+    final creditCat = <String, double>{};
+    double totalDebit = 0, totalCredit = 0;
+
+    for (final tx in txs) {
+      final cat = tx.category ?? 'Other';
       if (tx.type == TransactionType.debit) {
-        dailyDebits[tx.transactionDate.weekday - 1] += tx.amount;
+        debitCat[cat] = (debitCat[cat] ?? 0) + tx.amount;
         totalDebit += tx.amount;
       } else {
-        dailyCredits[tx.transactionDate.weekday - 1] += tx.amount;
+        creditCat[cat] = (creditCat[cat] ?? 0) + tx.amount;
         totalCredit += tx.amount;
       }
     }
 
-    final titles = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    final dataPoints = List.generate(7, (i) {
-      return ChartDataPoint(titles[i], dailyDebits[i], dailyCredits[i]);
-    });
+    final allCats = {...debitCat.keys, ...creditCat.keys}.toList()..sort();
+    final points = allCats
+        .map((c) => DataPoint(c, debitCat[c] ?? 0, creditCat[c] ?? 0))
+        .toList();
 
-    return ReportChartData(
-      title: 'This Week',
-      total1: totalDebit,
-      total2: totalCredit,
-      dataPoints: dataPoints,
-    );
-  }
-
-  ReportChartData _getMonthlyData(DateTime now) {
-    final startOfMonth = DateTime(now.year, now.month, 1);
-    final endOfMonth = DateTime(now.year, now.month + 1, 0, 23, 59);
-
-    final thisMonthDebits = _transactions.where((tx) {
-      return tx.type == TransactionType.debit &&
-          tx.transactionDate.isAfter(startOfMonth) &&
-          tx.transactionDate.isBefore(endOfMonth);
-    }).toList();
-
-    final categoryTotals = <String, double>{};
-    double totalDebit = 0;
-    for (var tx in thisMonthDebits) {
-      final category = tx.category ?? 'Other';
-      categoryTotals[category] = (categoryTotals[category] ?? 0) + tx.amount;
-      totalDebit += tx.amount;
-    }
-
-    final sortedEntries = categoryTotals.entries.toList();
-    sortedEntries.sort((a, b) => b.value.compareTo(a.value));
-
-    final dataPoints = sortedEntries.map((e) {
-      return ChartDataPoint(e.key, e.value, 0);
-    }).toList();
-
-    return ReportChartData(
-      title: 'This Month\'s Spending',
-      total1: totalDebit,
-      total2: 0,
-      dataPoints: dataPoints,
-    );
-  }
-
-  ReportChartData _getYearlyData(DateTime now) {
-    final startOfYear = DateTime(now.year, 1, 1);
-    final endOfYear = DateTime(now.year, 12, 31, 23, 59);
-
-    final thisYearTxs = _transactions.where((tx) {
-      return tx.transactionDate.isAfter(startOfYear) &&
-          tx.transactionDate.isBefore(endOfYear);
-    }).toList();
-
-    final monthlyDebits = List.filled(12, 0.0);
-    final monthlyCredits = List.filled(12, 0.0);
-    double totalDebit = 0;
-    double totalCredit = 0;
-
-    for (var tx in thisYearTxs) {
-      if (tx.type == TransactionType.debit) {
-        monthlyDebits[tx.transactionDate.month - 1] += tx.amount;
-        totalDebit += tx.amount;
-      } else {
-        monthlyCredits[tx.transactionDate.month - 1] += tx.amount;
-        totalCredit += tx.amount;
-      }
-    }
-
-    final titles = DateFormat.E().dateSymbols.SHORTMONTHS;
-    final dataPoints = List.generate(12, (i) {
-      return ChartDataPoint(titles[i], monthlyDebits[i], monthlyCredits[i]);
-    });
-
-    return ReportChartData(
-      title: 'This Year',
-      total1: totalDebit,
-      total2: totalCredit,
-      dataPoints: dataPoints,
+    return ReportData(
+      points,
+      '$title (by Category)',
+      totalDebit,
+      totalCredit,
     );
   }
 }
 
-// Helper class to hold processed chart data
-// value1 is Debit, value2 is Credit
-class ChartDataPoint {
+class DataPoint {
   final String label;
-  final double value1;
-  final double value2;
-  ChartDataPoint(this.label, this.value1, [this.value2 = 0]);
+  final double debit;
+  final double credit;
+  DataPoint(this.label, this.debit, this.credit);
 }
 
-// Helper class to hold the processed chart data
-// total1 is Debit, total2 is Credit
-class ReportChartData {
+class ReportData {
+  final List<DataPoint> data;
   final String title;
-  final double total1;
-  final double total2;
-  final List<ChartDataPoint> dataPoints;
+  final double totalDebit;
+  final double totalCredit;
+  ReportData(this.data, this.title, this.totalDebit, this.totalCredit);
+}
 
-  ReportChartData({
-    required this.title,
-    required this.total1,
-    required this.total2,
-    required this.dataPoints,
-  });
+class _PieLegendItem {
+  final String label;
+  final Color color;
+  _PieLegendItem({required this.label, required this.color});
 }
