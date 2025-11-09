@@ -11,6 +11,7 @@ dependencies:
   flutter:
     sdk: flutter
   fl_chart: ^0.68.0
+
   # Supabase
   supabase_flutter: ^2.5.0
 
@@ -19,10 +20,12 @@ dependencies:
   intl: ^0.18.1
   permission_handler: ^11.4.0
   image_picker: ^1.2.0
-  image: ^4.5.4 # We still need this for image handling
+  image: ^4.5.4
 
-  # *** NEW ML PACKAGE (REPLACES TFLITE) ***
+  # Google ML Kit & Firebase
   google_mlkit_text_recognition: ^0.11.0
+  firebase_core: ^3.0.0 # This is a dependency for firebase_messaging
+  firebase_messaging: ^15.0.1 # <-- This is the new line
 
 dev_dependencies:
   flutter_test:
@@ -32,6 +35,3 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  # We no longer need to list the tflite models as assets
-  # assets:
-  #   - assets/models/

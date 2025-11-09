@@ -5,7 +5,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:finsight/services/ocr_service.dart';
 import 'package:finsight/models/transaction_model.dart';
 import 'package:finsight/screens/add_transaction_screen.dart';
-import 'package:intl/intl.dart'; // ✅ for formatting date/time
+import 'package:intl/intl.dart';
 
 class OcrScreen extends StatefulWidget {
   const OcrScreen({super.key});
@@ -58,32 +58,23 @@ class _OcrScreenState extends State<OcrScreen> {
 
     final lowerText = text.toLowerCase();
 
-    // --- Detect merchant name ---
-    for (String line in lines) {
-      final lower = line.toLowerCase();
-      if (!RegExp(r'(road|layout|stage|block|gst|bill|no\.|operator|mc#|invoice)')
-          .hasMatch(lower) &&
-          RegExp(r'[a-zA-Z]').hasMatch(line)) {
-        merchant =
-            line.replaceAll(RegExp(r'[^a-zA-Z0-9 &]'), '').trim().toUpperCase();
-        break;
-      }
-    }
+    // --- Enhanced merchant name detection ---
+    merchant = _extractMerchantName(lines);
 
     // --- Detect transaction type ---
     if (lowerText.contains("credited") ||
         lowerText.contains("refund") ||
-        lowerText.contains("received")) {
+        lowerText.contains("received") ||
+        lowerText.contains("deposit")) {
       type = TransactionType.credit;
     }
 
-    // --- Extract amount using smart logic ---
+    // --- Extract amount using improved logic ---
     final extraction = _extractSmartAmount(text);
     amount = extraction['amount'] as double?;
 
     if (amount == null) return null;
 
-    // ✅ Use local system date and time
     final DateTime now = DateTime.now().toLocal();
     final formatted = DateFormat('dd-MM-yyyy hh:mm a').format(now);
     debugPrint("🕓 Transaction captured at (local): $formatted");
@@ -97,13 +88,69 @@ class _OcrScreenState extends State<OcrScreen> {
       userId: '',
       senderAddress: merchant,
       messageBody: text,
-      transactionDate: now, // ✅ Local system time
+      transactionDate: now,
       amount: amount,
       type: type,
     );
   }
 
-  // ---------------- SMART AMOUNT DETECTION + CONFIDENCE ----------------
+  // ============= IMPROVED MERCHANT EXTRACTION =============
+  String _extractMerchantName(List<String> lines) {
+    if (lines.isEmpty) return "Unknown";
+
+    // Common noise patterns to skip
+    final skipPatterns = RegExp(
+      r'(road|layout|stage|block|gst|bill|no\.|operator|mc#|invoice|'
+      r'receipt|tax|invoice|customer|copy|original|duplicate|'
+      r'^\d+$|^[\d\s\-\(\)]+$|phone|mobile|email|@|www\.|\.com)',
+      caseSensitive: false,
+    );
+
+    // Look for merchant in first 5 lines (usually at top)
+    for (int i = 0; i < min(5, lines.length); i++) {
+      final line = lines[i].trim();
+      final lower = line.toLowerCase();
+
+      // Skip if too short or just numbers
+      if (line.length < 3 || RegExp(r'^[\d\s\-\(\)]+$').hasMatch(line)) {
+        continue;
+      }
+
+      // Skip noise patterns
+      if (skipPatterns.hasMatch(lower)) continue;
+
+      // Must contain letters
+      if (!RegExp(r'[a-zA-Z]{3,}').hasMatch(line)) continue;
+
+      // Clean and format - FIXED REGEX
+      String cleaned = line
+          .replaceAll(RegExp(r'[^\w\s&\-]'), ' ')
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
+
+      // Skip if still too short or all caps with numbers (likely code)
+      if (cleaned.length < 3) continue;
+      if (RegExp(r'^[A-Z0-9\s]+$').hasMatch(cleaned) &&
+          RegExp(r'\d').hasMatch(cleaned)) continue;
+
+      // Capitalize properly
+      return _toTitleCase(cleaned);
+    }
+
+    return "Unknown Merchant";
+  }
+
+  String _toTitleCase(String text) {
+    return text.split(' ').map((word) {
+      if (word.isEmpty) return word;
+      if (word.length == 1) return word.toUpperCase();
+      // Keep all-caps acronyms
+      if (word == word.toUpperCase() && word.length <= 4) return word;
+      return word[0].toUpperCase() + word.substring(1).toLowerCase();
+    }).join(' ');
+  }
+
+  // ============= ENHANCED AMOUNT DETECTION =============
   Map<String, dynamic> _extractSmartAmount(String ocrText) {
     final lines = ocrText
         .split('\n')
@@ -111,8 +158,9 @@ class _OcrScreenState extends State<OcrScreen> {
         .where((l) => l.isNotEmpty)
         .toList();
 
+    // More flexible amount regex supporting various formats
     final amountRegex = RegExp(
-      r'(?:₹|rs\.?|inr)?\s*\b(\d{1,5}(?:,?\d{3})*(?:[.,]\s*\d{1,2})?)\b',
+      r'(?:₹|rs\.?|inr|rupees?)?\s*\b(\d{1,5}(?:[,\s]?\d{3})*(?:[.,]\s*\d{1,2})?)\b',
       caseSensitive: false,
     );
 
@@ -121,123 +169,165 @@ class _OcrScreenState extends State<OcrScreen> {
     String bestLine = "";
     String bestReason = "";
 
+    // Enhanced total keywords
+    final totalKeywords = [
+      'total', 'payable', 'amount', 'grand', 'balance',
+      'bill amt', 'bill amount', 'net amount', 'amount payable',
+      'you paid', 'paid', 'payment', 'to pay', 'final'
+    ];
+
     debugPrint("🔍 ===== Analyzing OCR text for total amount =====");
 
     for (int i = 0; i < lines.length; i++) {
-      final line = lines[i].toLowerCase();
-      if (RegExp(r'(gstin|phone|tel|batch|txn\s*id)').hasMatch(line)) continue;
+      final line = lines[i];
+      final lineLower = line.toLowerCase();
 
-      final isTotalLike = line.contains(RegExp(
-          r'total|payable|amount|grand|balance|bill amt|bill amount',
-          caseSensitive: false)) ||
-          line.replaceAll('1', 'l').contains('total');
+      // Skip irrelevant lines
+      if (RegExp(r'(gstin|gst\s*no|phone|tel|mobile|batch|txn\s*id|transaction\s*id|upi|order\s*id)')
+          .hasMatch(lineLower)) continue;
+
+      // Check for total keywords (more flexible matching)
+      final isTotalLike = totalKeywords.any((kw) => lineLower.contains(kw)) ||
+          line.replaceAll('1', 'l').toLowerCase().contains('total') ||
+          line.replaceAll('i', 'l').toLowerCase().contains('total');
 
       final matches = amountRegex.allMatches(line);
 
-      // ✅ Handle "total" line with amount on next line
+      // ✅ Handle "total" line with amount on next/previous line
       if (isTotalLike && matches.isEmpty) {
+        // Look ahead (next 2 lines)
         for (int lookAhead = 1; lookAhead <= 2; lookAhead++) {
           if (i + lookAhead < lines.length) {
-            final next = lines[i + lookAhead].toLowerCase();
+            final next = lines[i + lookAhead];
             final nextMatches = amountRegex.allMatches(next);
             for (final nm in nextMatches) {
-              final raw = nm.group(1);
-              if (raw == null) continue;
-              final parsed =
-              double.tryParse(raw.replaceAll(',', '').replaceAll(' ', ''));
-              if (parsed != null && parsed > 1 && parsed < 100000) {
-                double score = 20 - lookAhead * 2;
+              final parsed = _parseAmount(nm.group(1));
+              if (parsed != null && parsed > 1 && parsed < 500000) {
+                double score = 25 - lookAhead * 3;
                 if (score > bestScore) {
                   bestScore = score;
                   bestValue = parsed;
                   bestLine = lines[i + lookAhead];
-                  bestReason = "[Total on next line +$score]";
+                  bestReason = "[Total label, amount on next line +$score]";
                 }
+              }
+            }
+          }
+        }
+
+        // Look back (previous line)
+        if (i > 0) {
+          final prev = lines[i - 1];
+          final prevMatches = amountRegex.allMatches(prev);
+          for (final pm in prevMatches) {
+            final parsed = _parseAmount(pm.group(1));
+            if (parsed != null && parsed > 1 && parsed < 500000) {
+              double score = 22;
+              if (score > bestScore) {
+                bestScore = score;
+                bestValue = parsed;
+                bestLine = lines[i - 1];
+                bestReason = "[Total label, amount on prev line +$score]";
               }
             }
           }
         }
       }
 
+      // Process amounts on the current line
       for (final m in matches) {
-        final raw = m.group(1);
-        if (raw == null) continue;
-
-        final parsed =
-        double.tryParse(raw.replaceAll(',', '').replaceAll(' ', ''));
+        final parsed = _parseAmount(m.group(1));
         if (parsed == null) continue;
 
         double score = 0;
         String reason = "";
 
+        // ✅ Strong positive signals
         if (isTotalLike) {
-          score += 12;
-          reason += "[Total keyword +12] ";
+          score += 15;
+          reason += "[Total keyword +15] ";
         }
-        if (m.group(0)!.contains(RegExp(r'₹|rs|inr', caseSensitive: false))) {
+
+        // Currency symbol present
+        if (m.group(0)!.contains(RegExp(r'₹|rs|inr|rupees?', caseSensitive: false))) {
+          score += 4;
+          reason += "[Currency +4] ";
+        }
+
+        // Has decimal (more precise)
+        if (parsed % 1 != 0) {
           score += 3;
-          reason += "[Currency symbol +3] ";
+          reason += "[Decimal +3] ";
         }
-        if (raw.contains('.')) {
+
+        // Reasonable amount range
+        if (parsed >= 50 && parsed <= 10000) {
+          score += 3;
+          reason += "[Good range +3] ";
+        } else if (parsed > 10000 && parsed <= 50000) {
           score += 2;
-          reason += "[Has decimal +2] ";
-        }
-        if (parsed >= 50 && parsed < 50000) {
-          score += 2;
-          reason += "[Reasonable amount +2] ";
-        } else if (parsed < 5) {
+          reason += "[High but valid +2] ";
+        } else if (parsed < 10) {
+          score -= 8;
+          reason += "[Too small -8] ";
+        } else if (parsed > 50000) {
           score -= 5;
-          reason += "[Tiny value -5] ";
+          reason += "[Unusually high -5] ";
         }
 
-        if (line.contains(RegExp(r'saved|discount|save'))) {
-          score -= 15;
-          reason += "[Discount/Saved line -15] ";
+        // ✅ Strong negative signals
+        if (lineLower.contains(RegExp(r'saved|discount|save|you save'))) {
+          score -= 20;
+          reason += "[Discount -20] ";
         }
 
-        if (line.contains('%') ||
-            line.contains('cgst') ||
-            line.contains('sgst')) {
-          score -= 10;
-          reason += "[Tax line (%) -10] ";
-        }
-
-        if (line.contains(RegExp(
-            r'\b(order|ord|bill#|invoice|pi|no\.|id|ref)\b',
-            caseSensitive: false))) {
+        if (lineLower.contains('%') || lineLower.contains('cgst') ||
+            lineLower.contains('sgst') || lineLower.contains('tax')) {
           score -= 12;
-          reason += "[Order/Invoice line -12] ";
+          reason += "[Tax line -12] ";
         }
 
-        if (!isTotalLike && RegExp(r'[a-zA-Z]+\d+').hasMatch(line)) {
+        if (lineLower.contains(RegExp(
+            r'\b(order|ord|bill\s*#|invoice|pi|no\.|id|ref|txn)\b'))) {
           score -= 15;
-          reason += "[AlphaNumeric code -15] ";
+          reason += "[ID/Reference -15] ";
         }
 
-        if (line.length < 8 && parsed >= 100 && parsed <= 999) {
-          score -= 15;
-          reason += "[Short numeric code -15] ";
+        // Alphanumeric codes (likely not amounts)
+        if (!isTotalLike && RegExp(r'[A-Z]{2,}\d+|\d+[A-Z]{2,}').hasMatch(line)) {
+          score -= 18;
+          reason += "[Code pattern -18] ";
         }
 
-        if (RegExp(r'\b\d+(\.\d+)?\s+\d+(\.\d+)?\s+\d+(\.\d+)?')
+        // Short numeric lines (likely codes)
+        if (line.length < 10 && RegExp(r'^\d+$').hasMatch(line.trim())) {
+          score -= 20;
+          reason += "[Standalone number -20] ";
+        }
+
+        // Item rows (multiple numbers)
+        if (RegExp(r'\b\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\s+\d+(?:\.\d+)?')
             .hasMatch(line)) {
-          score -= 4;
-          reason += "[Item row -4] ";
+          score -= 6;
+          reason += "[Item row -6] ";
         }
 
-        score += (i / lines.length) * 1.5;
-        reason += "[Bottom +${(i / lines.length * 1.5).toStringAsFixed(1)}] ";
+        // ✅ Position bonus (totals usually near bottom)
+        final positionBonus = (i / max(1, lines.length - 1)) * 2.5;
+        score += positionBonus;
+        reason += "[Position +${positionBonus.toStringAsFixed(1)}] ";
 
-        if (parsed < 10) {
-          final nearby = lines.skip(max(0, i - 3)).take(6).join(' ');
-          if (RegExp(r'(\d{2,3}\.\d{1,2})').hasMatch(nearby)) {
-            score -= 10;
-            reason += "[Tiny vs nearby large -10] ";
+        // Context check for tiny amounts
+        if (parsed < 20) {
+          final context = lines.skip(max(0, i - 2)).take(5).join(' ');
+          if (RegExp(r'(\d{3,}\.\d{1,2})').hasMatch(context)) {
+            score -= 12;
+            reason += "[Tiny vs context -12] ";
           }
         }
 
         debugPrint(
-            "Line ${i + 1}: '$line' => ₹$parsed | Score: $score | $reason");
+            "Line ${i + 1}: '$line' => ₹$parsed | Score: ${score.toStringAsFixed(1)} | $reason");
 
         if (score > bestScore) {
           bestScore = score;
@@ -248,40 +338,46 @@ class _OcrScreenState extends State<OcrScreen> {
       }
     }
 
-    // Fallback if nothing detected
-    if (bestValue == null) {
-      final all = amountRegex
+    // ✅ Improved fallback
+    if (bestValue == null || bestScore < 0) {
+      final allAmounts = amountRegex
           .allMatches(ocrText)
-          .map((m) {
-        final raw = m.group(1);
-        if (raw == null) return null;
-        return double.tryParse(raw.replaceAll(',', '').replaceAll(' ', ''));
-      })
+          .map((m) => _parseAmount(m.group(1)))
           .whereType<double>()
-          .where((v) => v > 1 && v < 20000)
+          .where((v) => v >= 10 && v < 100000)
           .toList();
 
-      if (all.isNotEmpty) bestValue = all.reduce(max);
-      bestLine = "(fallback largest)";
-      bestReason = "No confident match — fallback to largest";
+      if (allAmounts.isNotEmpty) {
+        // Use median instead of max for better accuracy
+        allAmounts.sort();
+        bestValue = allAmounts[allAmounts.length ~/ 2];
+        bestLine = "(fallback median)";
+        bestReason = "No confident match — using median value";
+        bestScore = 5;
+      }
     }
 
-    final confidence =
-    (bestScore <= 0) ? 0 : min(1.0, (bestScore / 18.0));
+    // Calculate confidence (0-1 scale)
+    final confidence = bestScore <= 0
+        ? 0.0
+        : min(1.0, max(0.0, (bestScore + 5) / 25.0));
 
-    if (confidence < 0.4) {
+    // ✅ Adaptive threshold based on score distribution
+    final minConfidence = bestScore > 15 ? 0.3 : 0.5;
+
+    if (confidence < minConfidence) {
       debugPrint(
-          "⚠️ Low confidence (${confidence.toStringAsFixed(2)}) — ignoring amount.");
+          "⚠️ Low confidence (${confidence.toStringAsFixed(2)}) — rejecting amount.");
       return {
         'amount': null,
         'confidence': confidence,
         'line': bestLine,
-        'reason': "$bestReason [Rejected: confidence < 0.4]",
+        'reason': "$bestReason [Rejected: confidence < $minConfidence]",
       };
     }
 
     debugPrint(
-        "✅ Selected ₹$bestValue | Line: '$bestLine' | Score: $bestScore | Confidence: ${confidence.toStringAsFixed(2)}");
+        "✅ Selected ₹$bestValue | Line: '$bestLine' | Score: ${bestScore.toStringAsFixed(1)} | Confidence: ${confidence.toStringAsFixed(2)}");
     debugPrint("============================================");
 
     return {
@@ -290,6 +386,19 @@ class _OcrScreenState extends State<OcrScreen> {
       'line': bestLine,
       'reason': bestReason,
     };
+  }
+
+  // Helper to parse amount string
+  double? _parseAmount(String? raw) {
+    if (raw == null) return null;
+
+    // Remove commas and spaces
+    final cleaned = raw.replaceAll(',', '').replaceAll(' ', '').trim();
+
+    // Handle both dot and comma as decimal separator
+    final normalized = cleaned.replaceAll(',', '.');
+
+    return double.tryParse(normalized);
   }
 
   @override
@@ -390,7 +499,8 @@ class _OcrScreenState extends State<OcrScreen> {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                         content: Text(
-                            "Could not extract amount confidently. Please enter manually.")),
+                            "Could not extract amount confidently. Please enter manually."),
+                        duration: Duration(seconds: 3)),
                   );
                   Navigator.push(
                     context,
